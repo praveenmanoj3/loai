@@ -932,7 +932,7 @@ export function App() {
           <div className="flex items-center gap-2">
             <span className="font-semibold text-slate-300">Shorts AI</span>
             <span>—</span>
-            <span>100% In-Browser Local Video Studio (Day 9 - Batch Export)</span>
+            <span>100% In-Browser Local Video Studio (Day 10 - Kinetic Subtitles)</span>
           </div>
 
           <div className="flex items-center gap-4 text-[11px]">

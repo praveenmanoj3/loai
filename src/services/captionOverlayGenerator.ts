@@ -1,5 +1,5 @@
 import type { CaptionSegment } from './subtitleUtils';
-import type { CaptionStyle } from './captionStyles';
+import { type CaptionStyle, isPowerWord } from './captionStyles';
 
 export interface CaptionImageOverlay {
   filename: string;
@@ -12,8 +12,7 @@ export interface CaptionImageOverlay {
 
 /**
  * Generates transparent PNG overlays for each caption segment using Canvas 2D
- * This allows 100% faithful rendering of custom fonts, colors, stroke outlines,
- * and background boxes directly within FFmpeg's built-in `overlay` filter.
+ * Supports both static phrases and dynamic word-by-word kinetic/karaoke active highlights.
  */
 export async function generateCaptionPngOverlays(
   segments: CaptionSegment[],
@@ -23,15 +22,14 @@ export async function generateCaptionPngOverlays(
 ): Promise<CaptionImageOverlay[]> {
   const overlays: CaptionImageOverlay[] = [];
 
-  // Create offscreen canvas
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   if (!ctx) return [];
 
-  // Scale factor based on resolution (1080p vs 720p)
   const scale = canvasWidth / 1080;
   const fontSize = Math.round(style.fontSize * scale);
   const strokeWidth = Math.round(style.strokeWidth * scale);
+  let overlayCounter = 0;
 
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
@@ -42,96 +40,203 @@ export async function generateCaptionPngOverlays(
       text = text.toUpperCase();
     }
 
-    // Set font to measure dimensions
-    ctx.font = `900 ${fontSize}px "${style.fontFamily}", sans-serif`;
-    
-    // Split long lines if needed (max ~28 chars per line on vertical shorts)
     const words = text.split(/\s+/);
-    const lines: string[] = [];
-    let currentLine = '';
+    if (words.length === 0) continue;
 
-    for (const word of words) {
-      const testLine = currentLine ? `${currentLine} ${word}` : word;
-      const metrics = ctx.measureText(testLine);
-      if (metrics.width > canvasWidth * 0.85 && currentLine) {
-        lines.push(currentLine);
-        currentLine = word;
+    const segDuration = Math.max(0.1, seg.end - seg.start);
+    const isKinetic = style.animationType !== 'static';
+
+    // Measure and wrap words into lines
+    ctx.font = `900 ${fontSize}px "${style.fontFamily}", sans-serif`;
+    const lines: Array<{ words: Array<{ text: string; wordIdx: number }> }> = [];
+    let currentLineWords: Array<{ text: string; wordIdx: number }> = [];
+    let currentLineWidth = 0;
+
+    const spaceWidth = ctx.measureText(' ').width;
+
+    for (let w = 0; w < words.length; w++) {
+      const wText = words[w];
+      const wMetrics = ctx.measureText(wText);
+      const testWidth = currentLineWidth === 0 ? wMetrics.width : currentLineWidth + spaceWidth + wMetrics.width;
+
+      if (testWidth > canvasWidth * 0.85 && currentLineWords.length > 0) {
+        lines.push({ words: currentLineWords });
+        currentLineWords = [{ text: wText, wordIdx: w }];
+        currentLineWidth = wMetrics.width;
       } else {
-        currentLine = testLine;
+        currentLineWords.push({ text: wText, wordIdx: w });
+        currentLineWidth = testWidth;
       }
     }
-    if (currentLine) lines.push(currentLine);
+    if (currentLineWords.length > 0) {
+      lines.push({ words: currentLineWords });
+    }
 
     const lineHeight = fontSize * 1.25;
     const totalTextHeight = lines.length * lineHeight;
-    
-    // Measure max line width
+
+    // Find max width of all lines
     let maxLineWidth = 0;
-    for (const line of lines) {
-      const m = ctx.measureText(line);
-      if (m.width > maxLineWidth) maxLineWidth = m.width;
-    }
+    lines.forEach((line) => {
+      let lWidth = 0;
+      line.words.forEach((lw, idx) => {
+        lWidth += ctx.measureText(lw.text).width;
+        if (idx < line.words.length - 1) lWidth += spaceWidth;
+      });
+      if (lWidth > maxLineWidth) maxLineWidth = lWidth;
+    });
 
     const paddingX = style.backgroundColor !== 'transparent' ? 32 * scale : 20 * scale;
     const paddingY = style.backgroundColor !== 'transparent' ? 20 * scale : 12 * scale;
     const overlayWidth = Math.min(canvasWidth, Math.ceil(maxLineWidth + paddingX * 2 + strokeWidth * 4));
     const overlayHeight = Math.ceil(totalTextHeight + paddingY * 2 + strokeWidth * 4);
 
-    // Resize canvas for this specific overlay
-    canvas.width = overlayWidth;
-    canvas.height = overlayHeight;
+    // If Word Pop mode: generate single word pop frames
+    if (style.animationType === 'word_pop') {
+      const wordDuration = segDuration / words.length;
 
-    // Clear transparent background
-    ctx.clearRect(0, 0, overlayWidth, overlayHeight);
+      for (let w = 0; w < words.length; w++) {
+        const activeWord = words[w];
+        const isPower = style.autoHighlightPowerWords && isPowerWord(activeWord);
+        const wStart = Number((seg.start + w * wordDuration).toFixed(2));
+        const wEnd = Number((seg.start + (w + 1) * wordDuration).toFixed(2));
 
-    const centerX = overlayWidth / 2;
-    const startY = paddingY + strokeWidth + fontSize * 0.85;
+        const popFontSize = Math.round(fontSize * 1.3);
+        ctx.font = `900 ${popFontSize}px "${style.fontFamily}", sans-serif`;
+        const popMetrics = ctx.measureText(activeWord);
+        const popWidth = Math.min(canvasWidth, Math.ceil(popMetrics.width + paddingX * 2 + strokeWidth * 4));
+        const popHeight = Math.ceil(popFontSize * 1.3 + paddingY * 2 + strokeWidth * 4);
 
-    // Draw background box if enabled
-    if (style.backgroundColor && style.backgroundColor !== 'transparent') {
-      ctx.fillStyle = style.backgroundColor;
-      ctx.beginPath();
-      ctx.roundRect(4, 4, overlayWidth - 8, overlayHeight - 8, 16 * scale);
-      ctx.fill();
+        canvas.width = popWidth;
+        canvas.height = popHeight;
+        ctx.clearRect(0, 0, popWidth, popHeight);
+
+        if (style.backgroundColor && style.backgroundColor !== 'transparent') {
+          ctx.fillStyle = style.backgroundColor;
+          ctx.beginPath();
+          ctx.roundRect(4, 4, popWidth - 8, popHeight - 8, 16 * scale);
+          ctx.fill();
+        }
+
+        ctx.font = `900 ${popFontSize}px "${style.fontFamily}", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const cX = popWidth / 2;
+        const cY = popHeight / 2;
+
+        if (strokeWidth > 0) {
+          ctx.strokeStyle = style.strokeColor;
+          ctx.lineWidth = strokeWidth * 2.2;
+          ctx.lineJoin = 'round';
+          ctx.strokeText(activeWord, cX, cY);
+        }
+
+        ctx.fillStyle = isPower ? '#FF4500' : style.highlightColor || '#FFE600';
+        ctx.shadowColor = isPower ? 'rgba(255, 69, 0, 0.8)' : 'rgba(255, 230, 0, 0.8)';
+        ctx.shadowBlur = 12 * scale;
+        ctx.fillText(activeWord, cX, cY);
+
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+        if (blob) {
+          const arrayBuffer = await blob.arrayBuffer();
+          overlays.push({
+            filename: `caption_${overlayCounter++}.png`,
+            data: new Uint8Array(arrayBuffer),
+            start: wStart,
+            end: wEnd,
+            width: popWidth,
+            height: popHeight,
+          });
+        }
+      }
+      continue;
     }
 
-    ctx.font = `900 ${fontSize}px "${style.fontFamily}", sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'alphabetic';
+    // Number of frames to generate for this segment
+    const numSubFrames = isKinetic ? words.length : 1;
+    const subDuration = segDuration / numSubFrames;
 
-    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-      const lineText = lines[lineIdx];
-      const lineY = startY + lineIdx * lineHeight;
+    for (let f = 0; f < numSubFrames; f++) {
+      const activeWordIdx = isKinetic ? f : -1;
+      const fStart = Number((seg.start + f * subDuration).toFixed(2));
+      const fEnd = Number((seg.start + (f + 1) * subDuration).toFixed(2));
 
-      // Draw stroke outline if width > 0
-      if (strokeWidth > 0) {
-        ctx.strokeStyle = style.strokeColor;
-        ctx.lineWidth = strokeWidth * 2;
-        ctx.lineJoin = 'round';
-        ctx.miterLimit = 2;
-        ctx.strokeText(lineText, centerX, lineY);
+      canvas.width = overlayWidth;
+      canvas.height = overlayHeight;
+      ctx.clearRect(0, 0, overlayWidth, overlayHeight);
+
+      // Draw background box if enabled
+      if (style.backgroundColor && style.backgroundColor !== 'transparent') {
+        ctx.fillStyle = style.backgroundColor;
+        ctx.beginPath();
+        ctx.roundRect(4, 4, overlayWidth - 8, overlayHeight - 8, 16 * scale);
+        ctx.fill();
       }
 
-      // Draw main text fill
-      ctx.fillStyle = style.textColor;
-      ctx.shadowColor = 'rgba(0,0,0,0.85)';
-      ctx.shadowBlur = strokeWidth > 0 ? 0 : 8 * scale;
-      ctx.shadowOffsetY = 3 * scale;
-      ctx.fillText(lineText, centerX, lineY);
-    }
+      ctx.font = `900 ${fontSize}px "${style.fontFamily}", sans-serif`;
+      ctx.textBaseline = 'alphabetic';
 
-    // Export canvas as PNG data buffer
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
-    if (blob) {
-      const arrayBuffer = await blob.arrayBuffer();
-      overlays.push({
-        filename: `caption_${i}.png`,
-        data: new Uint8Array(arrayBuffer),
-        start: seg.start,
-        end: seg.end,
-        width: overlayWidth,
-        height: overlayHeight,
-      });
+      const startY = paddingY + strokeWidth + fontSize * 0.85;
+
+      for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+        const line = lines[lineIdx];
+        const lineY = startY + lineIdx * lineHeight;
+
+        // Calculate line start X to center the line
+        let totalLWidth = 0;
+        line.words.forEach((lw, idx) => {
+          totalLWidth += ctx.measureText(lw.text).width;
+          if (idx < line.words.length - 1) totalLWidth += spaceWidth;
+        });
+
+        let curX = (overlayWidth - totalLWidth) / 2;
+
+        for (let wIdx = 0; wIdx < line.words.length; wIdx++) {
+          const lw = line.words[wIdx];
+          const isCurrentActive = lw.wordIdx === activeWordIdx;
+          const isPower = style.autoHighlightPowerWords && isPowerWord(lw.text);
+
+          let wordColor = style.textColor;
+          if (isCurrentActive) {
+            wordColor = isPower ? '#FF4500' : style.highlightColor || '#FFE600';
+          } else if (isPower && isKinetic) {
+            wordColor = '#FF8A00'; // Warm highlight for power words
+          }
+
+          const wWidth = ctx.measureText(lw.text).width;
+
+          // Stroke
+          if (strokeWidth > 0) {
+            ctx.strokeStyle = style.strokeColor;
+            ctx.lineWidth = strokeWidth * 2;
+            ctx.lineJoin = 'round';
+            ctx.strokeText(lw.text, curX, lineY);
+          }
+
+          // Fill
+          ctx.fillStyle = wordColor;
+          ctx.shadowColor = isCurrentActive ? wordColor : 'rgba(0,0,0,0.85)';
+          ctx.shadowBlur = isCurrentActive ? 12 * scale : 4 * scale;
+          ctx.shadowOffsetY = 2 * scale;
+          ctx.fillText(lw.text, curX, lineY);
+
+          curX += wWidth + spaceWidth;
+        }
+      }
+
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+      if (blob) {
+        const arrayBuffer = await blob.arrayBuffer();
+        overlays.push({
+          filename: `caption_${overlayCounter++}.png`,
+          data: new Uint8Array(arrayBuffer),
+          start: fStart,
+          end: fEnd,
+          width: overlayWidth,
+          height: overlayHeight,
+        });
+      }
     }
   }
 
