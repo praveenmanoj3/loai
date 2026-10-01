@@ -1,0 +1,774 @@
+Project idea
+
+We're building a web-based AI video tool that can turn videos into short-form vertical content.
+
+The long-term product is:
+
+A collection of AI-powered video tools where the user's own computer performs the heavy processing instead of our servers.
+
+The first tool is:
+
+Video → Shorts
+
+Eventually:
+
+YouTube URL → automatically find good moments → create vertical Shorts → generate captions → export
+
+The product should be designed around local processing wherever technically practical.
+
+2. The core business idea
+
+The business model is:
+
+FREE TOOL
+    ↓
+Users discover it through search/social sharing
+    ↓
+Large traffic
+    ↓
+Free users
+    ↓
+Ads
+    +
+Optional premium features later
+
+The biggest advantage is infrastructure cost.
+
+We do not want to operate GPU servers for video processing.
+
+Instead:
+
+                    OUR WEBSITE
+                         │
+                         ▼
+                  USER'S BROWSER
+                         │
+              ┌──────────┴──────────┐
+              ▼                     ▼
+           CPU/WASM              WebGPU
+              │                     │
+              └──────────┬──────────┘
+                         ▼
+                   USER'S DEVICE
+                         │
+                         ▼
+                    FINAL VIDEO
+
+The user's hardware does the expensive work.
+
+3. VERY IMPORTANT PRIVACY PRINCIPLE
+
+The product should eventually be able to say:
+
+"Your video is processed on your device."
+
+But only display stronger claims such as:
+
+"Your videos never leave your device"
+
+when we have actually verified that the entire workflow doesn't send the video anywhere.
+
+We don't want marketing claims that aren't technically true.
+
+The preferred architecture is:
+
+Video
+ ↓
+User device
+ ↓
+Processing
+ ↓
+Result
+
+rather than:
+
+Video
+ ↓
+Our server
+ ↓
+Our GPU
+ ↓
+Result
+4. Why we're avoiding a server GPU
+
+Traditional architecture:
+
+10,000 users
+     ↓
+Our servers
+     ↓
+GPU processing
+     ↓
+Huge infrastructure cost
+
+Our architecture:
+
+10,000 users
+ ↓    ↓    ↓
+GPU  GPU  GPU
+ ↓    ↓    ↓
+USER USER USER
+
+The website should therefore be mostly responsible for:
+
+UI
+configuration
+orchestration
+model delivery
+processing logic
+displaying results
+
+rather than performing the heavy processing on our infrastructure.
+
+5. Browser-first architecture
+
+The primary experience should be browser-based.
+
+Users should ideally be able to:
+
+Open the website.
+Upload a video.
+Click Generate.
+Wait while their device processes it.
+Download the result.
+
+They should not need to download an .exe just to try the product.
+
+This is important for trust.
+
+6. Optional local executable later
+
+For extremely heavy processing, we may eventually provide:
+
+Local Processing Engine
+
+Architecture:
+
+Website
+   ↓
+Optional local engine
+   ↓
+User CPU/GPU
+   ↓
+Processing
+
+But this is not the primary Week 1 experience.
+
+If we eventually introduce it, it should be:
+
+Clearly branded
+Open-source where practical
+Explain exactly what it does
+Require minimal permissions
+Provide a GitHub repository
+Ideally digitally signed
+Provide checksums/releases
+Clearly explain why it's necessary
+
+Never make users download a suspicious-looking executable without context.
+
+7. Long-term product architecture
+
+Eventually the website could contain multiple tools:
+
+Creator tools
+YouTube → Shorts
+Video → Captions
+Video → Remove Silence
+Video → 9:16
+Video → Compress
+Video → Audio
+Podcast → Clips
+Video → Highlights
+Video → Subtitles
+Thumbnail Generator
+
+But we are NOT building these now.
+
+The first product is simply:
+
+Local Video → Short
+
+Once the underlying processing engine is reliable, additional tools can reuse it.
+
+8. Long-term YouTube workflow
+
+Eventually:
+
+YouTube URL
+     ↓
+Obtain/process permitted content
+     ↓
+Local processing
+     ↓
+Transcription
+     ↓
+Analyze transcript
+     ↓
+Find interesting segments
+     ↓
+Crop to 9:16
+     ↓
+Captions
+     ↓
+Export Shorts
+
+Important:
+
+The product should be designed around videos the user owns or is authorized to process and should respect applicable platform terms and copyright.
+
+For initial development, use videos you control.
+
+9. First MVP
+
+The first MVP is deliberately much smaller.
+
+Input
+Local video file
+Processing
+Video
+ ↓
+9:16 crop
+ ↓
+Speech-to-text
+ ↓
+Captions
+ ↓
+Export
+Output
+short.mp4
+
+No YouTube URL initially.
+
+No automatic AI highlight detection initially.
+
+10. Technology direction
+
+The project should investigate:
+
+Frontend
+
+React + Vite
+
+Styling
+
+Tailwind CSS
+
+Video processing
+
+FFmpeg / WebAssembly
+
+Browser GPU
+
+WebGPU
+
+Local AI
+
+Potentially:
+
+Whisper-based local speech-to-text
+
+The exact library/model should be selected based on actual browser compatibility and performance rather than assuming a particular implementation will work.
+
+11. Browser processing architecture
+
+Conceptually:
+
+React
+ │
+ ├── Upload
+ │
+ ├── Video preview
+ │
+ ├── Settings
+ │
+ ├── Progress
+ │
+ └── Results
+       │
+       ▼
+Processing layer
+ │
+ ├── FFmpeg/WASM
+ │
+ ├── WebGPU
+ │
+ └── Local AI model
+       │
+       ▼
+User's hardware
+
+The processing layer should be modular.
+
+Don't mix UI code and video-processing code together.
+
+12. Hardware detection
+
+Eventually the app should detect whether the user's browser supports the necessary technologies.
+
+For example:
+
+Hardware check
+
+WebGPU             ✓
+WASM                ✓
+Memory              16 GB
+Browser             Supported
+
+Recommended:
+⚡ Local GPU mode
+
+If GPU acceleration isn't available:
+
+WebGPU unavailable.
+
+Using CPU processing.
+Processing may take longer.
+
+The app should never assume everyone has a powerful GPU.
+
+13. UX philosophy
+
+The product should feel like a modern AI tool.
+
+But:
+
+simple > flashy
+
+The user shouldn't have to understand:
+
+WebGPU
+WASM
+FFmpeg
+CUDA
+AI models
+
+They should simply see:
+
+Upload → Generate → Download
+
+Advanced technical information can be available under something like:
+
+Processing details
+
+14. First UI
+
+Something like:
+
+┌─────────────────────────────────────┐
+│                                     │
+│             SHORTS AI               │
+│                                     │
+│     Turn videos into Shorts         │
+│     directly on your device         │
+│                                     │
+│  ┌───────────────────────────────┐  │
+│  │                               │  │
+│  │       Drop your video         │  │
+│  │                               │  │
+│  │       or                      │  │
+│  │                               │  │
+│  │       Choose a file           │  │
+│  │                               │  │
+│  └───────────────────────────────┘  │
+│                                     │
+│       Format: 9:16                  │
+│       Captions: ON                  │
+│                                     │
+│        [ Generate Short ]           │
+│                                     │
+└─────────────────────────────────────┘
+
+After processing:
+
+Your Short is ready
+
+┌──────────────────┐
+│                  │
+│     VIDEO        │
+│     PREVIEW      │
+│                  │
+└──────────────────┘
+
+[ Download Short ]
+15. Future monetization
+
+Don't implement this during Week 1.
+
+Eventually:
+
+Free
+Limited processing
+Basic captions
+720p/1080p depending on performance
+Ads
+Premium
+
+Potentially:
+
+More clips
+Batch processing
+Advanced captions
+Better AI clip selection
+Custom styles
+Higher quality
+More tools
+
+Possible pricing later:
+
+₹199–₹499/month
+
+But this should be based on actual usage and costs after launch.
+
+16. The most important engineering rule
+DO NOT build unnecessary backend infrastructure.
+
+Before adding:
+
+Node backend
+Database
+Cloud GPU
+Storage
+Authentication
+
+ask:
+
+"Does this actually need to exist if processing happens locally?"
+
+If not, don't add it.
+
+The initial product should ideally be deployable as a mostly static web application.
+
+17. WEEK 1 — EXACT PLAN
+
+Now give Antigravity this as the first development sprint.
+
+DAY 1 — Project + local video pipeline
+Goal
+
+Prove:
+
+A video can be processed entirely on the user's machine.
+
+Create:
+
+React + Vite
+Tailwind
+
+Build:
+
+Upload video
+      ↓
+Preview
+      ↓
+FFmpeg/WASM
+      ↓
+Convert/crop to 9:16
+      ↓
+Generate output
+      ↓
+Download
+Don't implement
+YouTube
+AI
+accounts
+backend
+ads
+payments
+Day 1 success condition
+input.mp4
+   ↓
+browser
+   ↓
+local FFmpeg
+   ↓
+short.mp4
+
+And the original video must not be uploaded to our server.
+
+DAY 2 — Proper video tool UI
+
+Turn the basic prototype into a usable tool.
+
+Add:
+
+Upload
+Drag & drop
+File picker
+File validation
+File size
+Video duration
+Preview
+
+Show the uploaded video.
+
+Settings
+Aspect ratio
+[ 9:16 ]
+
+Quality
+[ 1080p ]
+
+Captions
+[ ON ]
+Processing
+
+Show:
+
+Preparing video...
+Processing...
+Encoding...
+Finalizing...
+
+Don't fake the progress percentage.
+
+If actual progress isn't available, use meaningful processing states.
+
+DAY 3 — Local transcription
+
+Add local speech-to-text.
+
+Pipeline:
+
+Video
+ ↓
+Audio
+ ↓
+Local Whisper
+ ↓
+Transcript
+
+Then generate:
+
+captions.srt
+
+Everything should happen locally if technically feasible.
+
+Success condition
+
+A talking video produces a usable transcript.
+
+DAY 4 — Caption rendering
+
+Take:
+
+video.mp4
++
+captions.srt
+
+and produce:
+
+captioned-short.mp4
+
+Create only 2–3 styles.
+
+Example:
+
+Classic
+
+Simple white captions.
+
+Bold
+
+Large centered captions.
+
+Highlight
+
+Current spoken word gets emphasized.
+
+Don't spend the whole day designing 30 styles.
+
+DAY 5 — Automatic clip selection prototype
+
+Now introduce AI-ish functionality.
+
+Start simple.
+
+Input:
+
+10-minute video
+
+Output:
+
+candidate segment 1
+candidate segment 2
+candidate segment 3
+
+Use transcript segmentation and scoring.
+
+Possible scoring factors:
+
+Sentence completeness
++
+interesting keywords
++
+question/opening
++
+reasonable duration
++
+context
+
+Don't try to build a perfect AI recommendation engine yet.
+
+DAY 6 — WebGPU + performance
+
+Now test the architecture you actually care about.
+
+Check:
+
+WebGPU supported?
+WASM supported?
+Model can run locally?
+
+Benchmark:
+
+CPU
+vs
+GPU
+
+Measure actual processing time.
+
+Example:
+
+Device: RTX 3060
+
+CPU: 82 sec
+GPU: 19 sec
+
+Don't invent results; measure them.
+
+Important
+
+If a particular model doesn't work well in WebGPU, don't redesign the whole product around it.
+
+Document the limitation and keep a CPU fallback.
+
+DAY 7 — Polish + deployment
+
+Now make the MVP presentable.
+
+Add
+Landing page
+Tool page
+Processing state
+Error handling
+Browser compatibility message
+Privacy explanation
+Download result
+Mobile-friendly layout
+Privacy messaging
+
+Something like:
+
+Local processing
+
+Your video is processed on your device whenever supported. We don't upload your video for server-side processing.
+
+Only use this wording if your implementation actually verifies it.
+
+End-of-week product
+
+At the end of Week 1, the user experience should be:
+
+                  SHORTS AI
+
+             Turn videos into Shorts
+
+                    ↓
+
+             [ Upload Video ]
+
+                    ↓
+
+              Video Preview
+
+                    ↓
+
+             [ Generate ]
+
+                    ↓
+
+       Processing on your device...
+
+                    ↓
+
+            Captioned 9:16 Short
+
+                    ↓
+
+             [ Download ]
+
+And technically:
+
+                  Browser
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+       FFmpeg/WASM           WebGPU
+          │                     │
+          └──────────┬──────────┘
+                     │
+              Local AI model
+                     │
+                     ▼
+                User device
+🚫 Week 1 hard NO list
+
+Tell Antigravity not to build these yet:
+
+❌ YouTube downloader
+❌ Login
+❌ Database
+❌ Payments
+❌ Ads
+❌ Subscription
+❌ Cloud GPU
+❌ Admin panel
+❌ Desktop .exe
+❌ Mobile app
+❌ Multiple tools
+❌ Complex backend
+
+The objective is not to make a complete company in 7 days.
+
+It's to prove the core technical advantage.
+
+🏁 What happens after Week 1
+
+If Week 1 works:
+
+Week 2
+YouTube URL
+       ↓
+Local/permitted content acquisition
+       ↓
+Transcript
+       ↓
+AI clip selection
+       ↓
+9:16
+       ↓
+Captions
+       ↓
+3–5 Shorts
+Week 3
+
+Polish + performance + browser compatibility.
+
+Week 4
+
+Launch to real users.
+
+Then measure:
+
+Visitors
+↓
+Tool opens
+↓
+Videos processed
+↓
+Successful outputs
+↓
+Returning users
+
+Only after you have actual usage should you decide whether ads, premium features, or another monetization model makes sense.
