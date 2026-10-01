@@ -7,6 +7,7 @@ import { LiveCaptionOverlay } from './components/LiveCaptionOverlay';
 import { SmartClipSelector } from './components/SmartClipSelector';
 import { BenchmarkModal } from './components/BenchmarkModal';
 import { PrivacyModal } from './components/PrivacyModal';
+import { BatchExportModal } from './components/BatchExportModal';
 import { ProcessingProgress } from './components/ProcessingProgress';
 import { ResultView } from './components/ResultView';
 import { TranscriptViewer } from './components/TranscriptViewer';
@@ -22,6 +23,7 @@ import { extractVideoMetadata, type VideoMetadata } from './services/videoMetada
 import { whisperService } from './services/whisperService';
 import { DEFAULT_CAPTION_STYLE, type CaptionStyle } from './services/captionStyles';
 import { selectCandidateClips, type CandidateClip } from './services/clipSelector';
+import { batchExportService, type BatchOverallProgress } from './services/batchExportService';
 import type { CaptionSegment } from './services/subtitleUtils';
 import { 
   ShieldCheck, 
@@ -73,6 +75,12 @@ export function App() {
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [transcriptionTimeMs, setTranscriptionTimeMs] = useState<number | undefined>(undefined);
 
+  // Day 9: Batch Export Queue State
+  const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
+  const [isBatchModalOpen, setIsBatchModalOpen] = useState<boolean>(false);
+  const [batchProgress, setBatchProgress] = useState<BatchOverallProgress | null>(null);
+  const batchAbortRef = useRef<AbortController | null>(null);
+
   const [isProcessing, setIsProcessing] = useState(false);
   const [progressState, setProgressState] = useState<ProgressState>({
     phase: 'idle',
@@ -117,6 +125,8 @@ export function App() {
     if (transcriptSegments.length > 0 && metadata?.duration) {
       const clips = selectCandidateClips(transcriptSegments, metadata.duration);
       setCandidateClips(clips);
+      // Pre-select all candidate clips for batch export by default
+      setSelectedBatchIds(clips.map((c) => c.id));
     }
   }, [transcriptSegments, metadata?.duration]);
 
@@ -130,6 +140,9 @@ export function App() {
     setTranscriptSegments([]);
     setCandidateClips([]);
     setSelectedClipId(null);
+    setSelectedBatchIds([]);
+    setBatchProgress(null);
+    setIsBatchModalOpen(false);
     setTranscriptionTimeMs(undefined);
     setActiveTab('settings');
 
@@ -153,6 +166,9 @@ export function App() {
     setTranscriptSegments([]);
     setCandidateClips([]);
     setSelectedClipId(null);
+    setSelectedBatchIds([]);
+    setBatchProgress(null);
+    setIsBatchModalOpen(false);
     setTranscriptionTimeMs(undefined);
     setResult(null);
     setError(null);
@@ -193,6 +209,60 @@ export function App() {
     setSelectedClipId(clip.id);
     setTrimRange({ start: clip.start, end: clip.end });
     await executeGeneration({ start: clip.start, end: clip.end }, clip.segments);
+  };
+
+  // Batch Export Handlers
+  const handleToggleBatchSelect = (clipId: string) => {
+    setSelectedBatchIds((prev) =>
+      prev.includes(clipId) ? prev.filter((id) => id !== clipId) : [...prev, clipId]
+    );
+  };
+
+  const handleSelectAllBatch = () => {
+    setSelectedBatchIds(candidateClips.map((c) => c.id));
+  };
+
+  const handleDeselectAllBatch = () => {
+    setSelectedBatchIds([]);
+  };
+
+  const handleStartBatchExport = async (selectedClips: CandidateClip[]) => {
+    if (!selectedFile || selectedClips.length === 0) return;
+
+    const controller = new AbortController();
+    batchAbortRef.current = controller;
+    setIsBatchModalOpen(true);
+
+    try {
+      await batchExportService.runBatchExport(selectedFile, selectedClips, {
+        aspectRatio,
+        quality,
+        cropAlignment,
+        enableCaptions,
+        captionStyle,
+        threadCount,
+        videoFileName: selectedFile.name,
+        abortSignal: controller.signal,
+        onProgress: (p) => {
+          setBatchProgress(p);
+        },
+      });
+    } catch (err: any) {
+      console.error('Batch export error:', err);
+    }
+  };
+
+  const handleCancelBatch = () => {
+    if (batchAbortRef.current) {
+      batchAbortRef.current.abort();
+      batchAbortRef.current = null;
+    }
+  };
+
+  const handleDownloadBatchZip = () => {
+    if (batchProgress?.zipBlob && selectedFile) {
+      batchExportService.downloadZip(batchProgress.zipBlob, selectedFile.name);
+    }
   };
 
   // Standalone transcription trigger
@@ -763,9 +833,14 @@ export function App() {
                       <SmartClipSelector
                         clips={candidateClips}
                         selectedClipId={selectedClipId}
+                        selectedBatchIds={selectedBatchIds}
+                        onToggleBatchSelect={handleToggleBatchSelect}
+                        onSelectAllBatch={handleSelectAllBatch}
+                        onDeselectAllBatch={handleDeselectAllBatch}
                         onSelectClip={handleSelectClip}
                         onPreviewClip={handlePreviewClip}
                         onGenerateClipDirect={handleGenerateClipDirect}
+                        onStartBatchExport={handleStartBatchExport}
                         onTranscribe={handleTranscribeOnly}
                         isProcessing={isProcessing}
                       />
@@ -824,6 +899,16 @@ export function App() {
         )}
       </main>
 
+      {/* Day 9: Batch Export Modal */}
+      <BatchExportModal
+        isOpen={isBatchModalOpen}
+        progress={batchProgress}
+        onClose={() => setIsBatchModalOpen(false)}
+        onCancel={handleCancelBatch}
+        onDownloadZip={handleDownloadBatchZip}
+        videoFileName={selectedFile?.name || 'ShortsAI_Batch'}
+      />
+
       {/* Benchmark & Laptop Safety Advisor Modal */}
       <BenchmarkModal
         isOpen={isBenchmarkOpen}
@@ -847,7 +932,7 @@ export function App() {
           <div className="flex items-center gap-2">
             <span className="font-semibold text-slate-300">Shorts AI</span>
             <span>—</span>
-            <span>100% In-Browser Local Video Studio (Day 8)</span>
+            <span>100% In-Browser Local Video Studio (Day 9 - Batch Export)</span>
           </div>
 
           <div className="flex items-center gap-4 text-[11px]">
