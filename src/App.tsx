@@ -36,7 +36,6 @@ import {
   ChevronUp,
   Leaf,
   Clock,
-  Zap,
   Gauge
 } from 'lucide-react';
 

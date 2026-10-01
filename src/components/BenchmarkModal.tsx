@@ -13,8 +13,7 @@ import {
   AlertTriangle,
   Leaf,
   Clock,
-  Sliders,
-  HelpCircle
+  Sliders
 } from 'lucide-react';
 import { 
   runRealHardwareBenchmark, 

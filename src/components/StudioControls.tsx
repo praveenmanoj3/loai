@@ -15,7 +15,6 @@ import {
   Check,
   Bot,
   Leaf,
-  Zap,
   Gauge
 } from 'lucide-react';
 import type { AspectRatioType, QualityType, CropAlignment } from '../services/ffmpegService';
