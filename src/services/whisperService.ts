@@ -1,7 +1,7 @@
 import { pipeline, env } from '@huggingface/transformers';
 import { fetchFile } from '@ffmpeg/util';
 import { ffmpegService } from './ffmpegService';
-import { type CaptionSegment, generateSrt, generateVtt } from './subtitleUtils';
+import { type CaptionSegment, computeWordTimings, generateSrt, generateVtt } from './subtitleUtils';
 
 // Configure transformers.js for reliable client-side execution & caching
 env.allowLocalModels = false;
@@ -226,44 +226,106 @@ class WhisperService {
     }
 
     // Step 3: Run Speech-to-Text with timestamp chunks
-    const output = await model(audioData, {
-      chunk_length_s: 30,
-      stride_length_s: 5,
-      return_timestamps: true,
-    });
+    let output: any;
+    try {
+      // Attempt word-level timestamps first
+      output = await model(audioData, {
+        chunk_length_s: 30,
+        stride_length_s: 5,
+        return_timestamps: 'word',
+      });
+    } catch {
+      // Fallback to standard chunk timestamps
+      output = await model(audioData, {
+        chunk_length_s: 30,
+        stride_length_s: 5,
+        return_timestamps: true,
+      });
+    }
 
     if (onProgress) {
       onProgress({
-        status: 'Structuring transcript and generating SRT captions...',
+        status: 'Structuring transcript and generating word-synced captions...',
         progress: 95,
         phase: 'transcribing',
       });
     }
 
-    // Structure segments
+    // Structure segments with high-accuracy word timestamps
     const segments: CaptionSegment[] = [];
+
     if (output.chunks && Array.isArray(output.chunks) && output.chunks.length > 0) {
-      output.chunks.forEach((chunk: any, index: number) => {
-        const start = chunk.timestamp[0] ?? 0;
-        const end = chunk.timestamp[1] ?? (start + 2.5);
-        const text = chunk.text?.trim() || '';
-        if (text) {
-          segments.push({
-            id: index + 1,
-            start: Number(start.toFixed(2)),
-            end: Number(end.toFixed(2)),
-            text,
-          });
+      // Check if output chunks are word-level (average words per chunk <= 2)
+      const avgWordsPerChunk = output.chunks.reduce((acc: number, c: any) => acc + (c.text?.trim().split(/\s+/).length || 0), 0) / output.chunks.length;
+      const isWordLevel = avgWordsPerChunk <= 2;
+
+      if (isWordLevel) {
+        // Group word-level chunks into natural phrases of 4-7 words (~1.8-3.2 seconds)
+        let currentWords: Array<{ word: string; start: number; end: number }> = [];
+        let segStart = 0;
+        let segId = 1;
+
+        for (let idx = 0; idx < output.chunks.length; idx++) {
+          const chunk = output.chunks[idx];
+          const wText = chunk.text?.trim();
+          if (!wText) continue;
+
+          const wStart = Number((chunk.timestamp[0] ?? (currentWords.length > 0 ? currentWords[currentWords.length - 1].end : 0)).toFixed(2));
+          const wEnd = Number((chunk.timestamp[1] ?? (wStart + 0.35)).toFixed(2));
+
+          if (currentWords.length === 0) {
+            segStart = wStart;
+          }
+
+          currentWords.push({ word: wText, start: wStart, end: wEnd });
+
+          const isPunctuationEnd = /[.!?]$/.test(wText);
+          const isDurationLong = (wEnd - segStart) >= 2.8;
+          const isWordLimit = currentWords.length >= 6;
+
+          if (isPunctuationEnd || isDurationLong || isWordLimit || idx === output.chunks.length - 1) {
+            const combinedText = currentWords.map((w) => w.word).join(' ');
+            const segEnd = wEnd;
+
+            segments.push({
+              id: segId++,
+              start: segStart,
+              end: segEnd,
+              text: combinedText,
+              words: [...currentWords],
+            });
+
+            currentWords = [];
+          }
         }
-      });
+      } else {
+        // Standard phrase-level chunks: attach character/punctuation-weighted word timings
+        output.chunks.forEach((chunk: any, index: number) => {
+          const start = chunk.timestamp[0] ?? 0;
+          const end = chunk.timestamp[1] ?? (start + 2.5);
+          const text = chunk.text?.trim() || '';
+          if (text) {
+            const seg: CaptionSegment = {
+              id: index + 1,
+              start: Number(start.toFixed(2)),
+              end: Number(end.toFixed(2)),
+              text,
+            };
+            seg.words = computeWordTimings(seg);
+            segments.push(seg);
+          }
+        });
+      }
     } else if (output.text && output.text.trim()) {
       // Fallback single chunk
-      segments.push({
+      const singleSeg: CaptionSegment = {
         id: 1,
         start: 0,
         end: 5.0,
         text: output.text.trim(),
-      });
+      };
+      singleSeg.words = computeWordTimings(singleSeg);
+      segments.push(singleSeg);
     }
 
     const srt = generateSrt(segments);

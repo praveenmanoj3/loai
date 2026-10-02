@@ -1,4 +1,4 @@
-import type { CaptionSegment } from './subtitleUtils';
+import { type CaptionSegment, computeWordTimings } from './subtitleUtils';
 import { type CaptionStyle, isPowerWord } from './captionStyles';
 
 export interface CaptionImageOverlay {
@@ -43,7 +43,7 @@ export async function generateCaptionPngOverlays(
     const words = text.split(/\s+/);
     if (words.length === 0) continue;
 
-    const segDuration = Math.max(0.1, seg.end - seg.start);
+    const wordTimings = computeWordTimings(seg);
     const isKinetic = style.animationType !== 'static';
 
     // Measure and wrap words into lines
@@ -93,13 +93,12 @@ export async function generateCaptionPngOverlays(
 
     // If Word Pop mode: generate single word pop frames
     if (style.animationType === 'word_pop') {
-      const wordDuration = segDuration / words.length;
-
-      for (let w = 0; w < words.length; w++) {
-        const activeWord = words[w];
+      for (let w = 0; w < wordTimings.length; w++) {
+        const timing = wordTimings[w];
+        const activeWord = timing.word;
         const isPower = style.autoHighlightPowerWords && isPowerWord(activeWord);
-        const wStart = Number((seg.start + w * wordDuration).toFixed(2));
-        const wEnd = Number((seg.start + (w + 1) * wordDuration).toFixed(2));
+        const wStart = timing.start;
+        const wEnd = timing.end;
 
         const popFontSize = Math.round(fontSize * 1.3);
         ctx.font = `900 ${popFontSize}px "${style.fontFamily}", sans-serif`;
@@ -154,13 +153,12 @@ export async function generateCaptionPngOverlays(
     }
 
     // Number of frames to generate for this segment
-    const numSubFrames = isKinetic ? words.length : 1;
-    const subDuration = segDuration / numSubFrames;
+    const numSubFrames = isKinetic ? wordTimings.length : 1;
 
     for (let f = 0; f < numSubFrames; f++) {
       const activeWordIdx = isKinetic ? f : -1;
-      const fStart = Number((seg.start + f * subDuration).toFixed(2));
-      const fEnd = Number((seg.start + (f + 1) * subDuration).toFixed(2));
+      const fStart = isKinetic ? wordTimings[f].start : seg.start;
+      const fEnd = isKinetic ? wordTimings[f].end : seg.end;
 
       canvas.width = overlayWidth;
       canvas.height = overlayHeight;

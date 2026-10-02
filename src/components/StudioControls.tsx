@@ -15,9 +15,10 @@ import {
   Check,
   Bot,
   Leaf,
-  Gauge
+  Gauge,
+  Zap
 } from 'lucide-react';
-import type { AspectRatioType, QualityType, CropAlignment } from '../services/ffmpegService';
+import type { AspectRatioType, QualityType, CropAlignment, DynamicZoomType, ZoomIntensityType } from '../services/ffmpegService';
 import type { VideoMetadata } from '../services/videoMetadata';
 import { formatTime } from '../services/videoMetadata';
 
@@ -42,6 +43,10 @@ interface StudioControlsProps {
   onToggleEcoMode?: (enabled: boolean) => void;
   engineMode?: string;
   threadCount?: number;
+  dynamicZoom?: DynamicZoomType;
+  setDynamicZoom?: (z: DynamicZoomType) => void;
+  zoomIntensity?: ZoomIntensityType;
+  setZoomIntensity?: (i: ZoomIntensityType) => void;
 }
 
 export const StudioControls: React.FC<StudioControlsProps> = ({
@@ -65,6 +70,10 @@ export const StudioControls: React.FC<StudioControlsProps> = ({
   onToggleEcoMode,
   engineMode = 'auto',
   threadCount = 2,
+  dynamicZoom = 'none',
+  setDynamicZoom,
+  zoomIntensity = 'medium',
+  setZoomIntensity,
 }) => {
   const [isTrimming, setIsTrimming] = useState(false);
   const totalDuration = metadata?.duration || 0;
@@ -332,7 +341,76 @@ export const StudioControls: React.FC<StudioControlsProps> = ({
           </div>
         </div>
 
-        {/* 3. Captions & Whisper Speech-to-Text */}
+        {/* 3. Day 11: Dynamic Punch-in / Auto-Zoom */}
+        {setDynamicZoom && (
+          <div className="p-3.5 rounded-xl bg-white/5 border border-white/10 space-y-3">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded-lg bg-violet-500/10 text-violet-400">
+                <Zap className="w-3.5 h-3.5" />
+              </div>
+              <span className="text-xs font-bold text-slate-300">Dynamic Punch-in Zoom</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/15 border border-violet-500/25 text-violet-300 font-mono font-bold ml-auto">
+                DAY 11
+              </span>
+            </div>
+
+            {/* Zoom Type */}
+            <div className="grid grid-cols-4 gap-1.5">
+              {(['none', 'punch_in', 'slow_zoom', 'pulse'] as DynamicZoomType[]).map((z) => {
+                const labels: Record<DynamicZoomType, string> = {
+                  none: 'Off',
+                  punch_in: 'Punch In',
+                  slow_zoom: 'Slow Zoom',
+                  pulse: 'Pulse',
+                };
+                const isActive = dynamicZoom === z;
+                return (
+                  <button
+                    key={z}
+                    type="button"
+                    onClick={() => setDynamicZoom(z)}
+                    className={`py-1.5 px-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer text-center ${
+                      isActive
+                        ? 'bg-violet-600 text-white shadow-sm shadow-violet-500/30'
+                        : 'bg-black/30 text-slate-400 hover:text-slate-200 hover:bg-white/10'
+                    }`}
+                  >
+                    {labels[z]}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Intensity — only show when zoom is active */}
+            {dynamicZoom !== 'none' && setZoomIntensity && (
+              <div className="space-y-1.5">
+                <span className="text-[10px] text-slate-400 font-medium uppercase">Intensity</span>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(['subtle', 'medium', 'intense'] as ZoomIntensityType[]).map((lvl) => {
+                    const isActive = zoomIntensity === lvl;
+                    const accent = lvl === 'intense' ? 'bg-rose-600 shadow-rose-500/30' : lvl === 'medium' ? 'bg-violet-600 shadow-violet-500/30' : 'bg-slate-600';
+                    return (
+                      <button
+                        key={lvl}
+                        type="button"
+                        onClick={() => setZoomIntensity(lvl)}
+                        className={`py-1.5 rounded-lg text-[11px] font-semibold capitalize transition-all cursor-pointer ${
+                          isActive
+                            ? `${accent} text-white shadow-sm`
+                            : 'bg-black/30 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {lvl}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 4. Captions & Whisper Speech-to-Text */}
         <div className="p-3.5 rounded-xl bg-white/5 border border-white/10 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">

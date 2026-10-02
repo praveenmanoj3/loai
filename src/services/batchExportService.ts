@@ -1,5 +1,12 @@
 import JSZip from 'jszip';
-import { ffmpegService, type AspectRatioType, type QualityType, type CropAlignment } from './ffmpegService';
+import { 
+  ffmpegService, 
+  type AspectRatioType, 
+  type QualityType, 
+  type CropAlignment,
+  type DynamicZoomType,
+  type ZoomIntensityType 
+} from './ffmpegService';
 import type { CandidateClip } from './clipSelector';
 import type { CaptionStyle } from './captionStyles';
 import { generateSrt, formatSrtTimestamp } from './subtitleUtils';
@@ -33,6 +40,8 @@ export interface BatchExportOptions {
   aspectRatio: AspectRatioType;
   quality: QualityType;
   cropAlignment: CropAlignment;
+  dynamicZoom?: DynamicZoomType;
+  zoomIntensity?: ZoomIntensityType;
   enableCaptions: boolean;
   captionStyle: CaptionStyle;
   threadCount: number;
@@ -54,6 +63,8 @@ export class BatchExportService {
       aspectRatio,
       quality,
       cropAlignment,
+      dynamicZoom,
+      zoomIntensity,
       enableCaptions,
       captionStyle,
       threadCount,
@@ -140,6 +151,8 @@ export class BatchExportService {
           aspectRatio,
           quality,
           cropAlignment,
+          dynamicZoom,
+          zoomIntensity,
           threads: threadCount,
           trimRange: { start: clipStart, end: clipEnd },
           enableCaptions,

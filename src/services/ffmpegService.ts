@@ -23,11 +23,15 @@ export interface ProgressState {
 export type AspectRatioType = '9:16' | '1:1' | '4:5';
 export type QualityType = '1080p' | '720p' | '540p';
 export type CropAlignment = 'center' | 'left' | 'right';
+export type DynamicZoomType = 'none' | 'punch_in' | 'slow_zoom' | 'pulse';
+export type ZoomIntensityType = 'subtle' | 'medium' | 'intense';
 
 export interface ConvertOptions {
   aspectRatio?: AspectRatioType;
   quality?: QualityType;
   cropAlignment?: CropAlignment;
+  dynamicZoom?: DynamicZoomType;
+  zoomIntensity?: ZoomIntensityType;
   threads?: number;
   trimRange?: {
     start: number; // in seconds
@@ -159,6 +163,42 @@ class FFmpegService {
     }
     const yOffset = '(ih-oh)/2';
 
+    // Day 11: Dynamic Punch-in & Auto-Zoom Calculations
+    const dynamicZoom = options.dynamicZoom || 'none';
+    const zoomIntensity = options.zoomIntensity || 'medium';
+    const zoomMultiplier = zoomIntensity === 'subtle' ? 1.08 : zoomIntensity === 'intense' ? 1.25 : 1.15;
+
+    let baseWExpr = 'min(iw,ih*9/16)';
+    let baseHExpr = 'min(ih,iw*16/9)';
+
+    if (aspectRatio === '1:1') {
+      baseWExpr = 'min(iw,ih)';
+      baseHExpr = 'min(iw,ih)';
+    } else if (aspectRatio === '4:5') {
+      baseWExpr = 'min(iw,ih*4/5)';
+      baseHExpr = 'min(ih,iw*5/4)';
+    }
+
+    let finalCropFilter = `crop=${ratioCrop}:${xOffset}:${yOffset}`;
+
+    if (dynamicZoom === 'punch_in') {
+      // 3.5-second rhythmic punch cut: alternates 1.0x <-> zoomMultiplier
+      const wDynamic = `if(mod(floor(t/3.5),2),${baseWExpr}/${zoomMultiplier},${baseWExpr})`;
+      const hDynamic = `if(mod(floor(t/3.5),2),${baseHExpr}/${zoomMultiplier},${baseHExpr})`;
+      finalCropFilter = `crop=w='${wDynamic}':h='${hDynamic}':x='${xOffset}':y='${yOffset}'`;
+    } else if (dynamicZoom === 'slow_zoom') {
+      // Continuous 5.0-second slow push in
+      const delta = (zoomMultiplier - 1.0).toFixed(3);
+      const wDynamic = `${baseWExpr}*(1-${delta}*mod(t,5)/5)`;
+      const hDynamic = `${baseHExpr}*(1-${delta}*mod(t,5)/5)`;
+      finalCropFilter = `crop=w='${wDynamic}':h='${hDynamic}':x='${xOffset}':y='${yOffset}'`;
+    } else if (dynamicZoom === 'pulse') {
+      // Energetic 2.5-second pulse
+      const wDynamic = `if(lt(mod(t,2.5),0.4),${baseWExpr}/${zoomMultiplier},${baseWExpr})`;
+      const hDynamic = `if(lt(mod(t,2.5),0.4),${baseHExpr}/${zoomMultiplier},${baseHExpr})`;
+      finalCropFilter = `crop=w='${wDynamic}':h='${hDynamic}':x='${xOffset}':y='${yOffset}'`;
+    }
+
     // Check if we need to burn captions
     const shouldBurnCaptions = Boolean(
       enableCaptions && 
@@ -211,7 +251,7 @@ class FFmpegService {
       }
 
       // Build filter_complex chaining overlays
-      let filterComplex = `[0:v]crop=${ratioCrop}:${xOffset}:${yOffset},scale=${targetWidth}:${targetHeight}[v0]`;
+      let filterComplex = `[0:v]${finalCropFilter},scale=${targetWidth}:${targetHeight}[v0]`;
 
       if (overlays.length > 0) {
         filterComplex += ';';
@@ -242,7 +282,7 @@ class FFmpegService {
       }
     } else {
       // Standard video crop without captions
-      const filterString = `crop=${ratioCrop}:${xOffset}:${yOffset},scale=${targetWidth}:${targetHeight}`;
+      const filterString = `${finalCropFilter},scale=${targetWidth}:${targetHeight}`;
       execArgs.push(
         '-vf', filterString,
         '-map', '0:v',

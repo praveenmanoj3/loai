@@ -17,7 +17,9 @@ import {
   type ProgressState, 
   type AspectRatioType, 
   type QualityType, 
-  type CropAlignment 
+  type CropAlignment,
+  type DynamicZoomType,
+  type ZoomIntensityType,
 } from './services/ffmpegService';
 import { extractVideoMetadata, type VideoMetadata } from './services/videoMetadata';
 import { whisperService } from './services/whisperService';
@@ -65,6 +67,8 @@ export function App() {
   const [cropAlignment, setCropAlignment] = useState<CropAlignment>('center');
   const [enableCaptions, setEnableCaptions] = useState<boolean>(true);
   const [trimRange, setTrimRange] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
+  const [dynamicZoom, setDynamicZoom] = useState<DynamicZoomType>('none');
+  const [zoomIntensity, setZoomIntensity] = useState<ZoomIntensityType>('medium');
 
   // Caption Styling State (Fully customizable)
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(DEFAULT_CAPTION_STYLE);
@@ -238,6 +242,8 @@ export function App() {
         aspectRatio,
         quality,
         cropAlignment,
+        dynamicZoom,
+        zoomIntensity,
         enableCaptions,
         captionStyle,
         threadCount,
@@ -382,6 +388,8 @@ export function App() {
         aspectRatio,
         quality,
         cropAlignment,
+        dynamicZoom,
+        zoomIntensity,
         threads: threadCount,
         trimRange: activeTrim,
         enableCaptions,
@@ -814,6 +822,10 @@ export function App() {
                         onToggleEcoMode={handleToggleEcoMode}
                         engineMode={engineMode}
                         threadCount={threadCount}
+                        dynamicZoom={dynamicZoom}
+                        setDynamicZoom={setDynamicZoom}
+                        zoomIntensity={zoomIntensity}
+                        setZoomIntensity={setZoomIntensity}
                       />
                     )}
 
@@ -932,7 +944,7 @@ export function App() {
           <div className="flex items-center gap-2">
             <span className="font-semibold text-slate-300">Shorts AI</span>
             <span>—</span>
-            <span>100% In-Browser Local Video Studio (Day 10 - Kinetic Subtitles)</span>
+            <span>100% In-Browser Local Video Studio (Day 11 - Dynamic Punch-in Zoom)</span>
           </div>
 
           <div className="flex items-center gap-4 text-[11px]">

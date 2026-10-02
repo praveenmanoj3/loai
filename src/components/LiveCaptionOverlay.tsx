@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import type { CaptionSegment } from '../services/subtitleUtils';
+import React, { useState, useEffect, useRef } from 'react';
+import { type CaptionSegment, computeWordTimings } from '../services/subtitleUtils';
 import { type CaptionStyle, isPowerWord } from '../services/captionStyles';
 
 interface LiveCaptionOverlayProps {
@@ -15,6 +15,8 @@ export const LiveCaptionOverlay: React.FC<LiveCaptionOverlayProps> = ({
 }) => {
   const [activeSeg, setActiveSeg] = useState<CaptionSegment | null>(null);
   const [activeWordIndex, setActiveWordIndex] = useState<number>(0);
+  const rafRef = useRef<number>(0);
+  const isRunningRef = useRef<boolean>(false);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -23,53 +25,75 @@ export const LiveCaptionOverlay: React.FC<LiveCaptionOverlayProps> = ({
       return;
     }
 
-    let animationFrameId: number;
-
-    const updateCaption = () => {
+    const tick = () => {
       const time = video.currentTime;
-      const foundSeg = segments.find((seg) => time >= seg.start && time <= seg.end);
+
+      // Find segment whose window contains current time
+      const foundSeg = segments.find((seg) => time >= seg.start && time < seg.end + 0.15);
 
       if (foundSeg) {
         setActiveSeg(foundSeg);
-        
-        // Calculate dynamic word timing
-        const duration = Math.max(0.1, foundSeg.end - foundSeg.start);
-        const elapsed = Math.max(0, time - foundSeg.start);
-        const words = foundSeg.text.trim().split(/\s+/);
-        
-        const calculatedIndex = Math.min(
-          words.length - 1,
-          Math.max(0, Math.floor((elapsed / duration) * words.length))
-        );
-        setActiveWordIndex(calculatedIndex);
+
+        const wordTimings = computeWordTimings(foundSeg);
+
+        // "Last started word" approach: find the rightmost word that has already begun.
+        // This is more reliable than exact range matching and has zero artificial offset.
+        let bestIdx = 0;
+        for (let i = 0; i < wordTimings.length; i++) {
+          if (time >= wordTimings[i].start) {
+            bestIdx = i;
+          } else {
+            break;
+          }
+        }
+
+        setActiveWordIndex(bestIdx);
       } else {
         setActiveSeg(null);
       }
 
-      if (!video.paused && !video.ended) {
-        animationFrameId = requestAnimationFrame(updateCaption);
+      if (isRunningRef.current) {
+        rafRef.current = requestAnimationFrame(tick);
       }
     };
 
-    const handlePlay = () => {
-      animationFrameId = requestAnimationFrame(updateCaption);
+    const startLoop = () => {
+      if (!isRunningRef.current) {
+        isRunningRef.current = true;
+        rafRef.current = requestAnimationFrame(tick);
+      }
     };
 
-    const handleTimeUpdate = () => {
-      updateCaption();
+    const stopLoop = () => {
+      isRunningRef.current = false;
+      cancelAnimationFrame(rafRef.current);
     };
+
+    const handlePlay = () => startLoop();
+    const handlePause = () => stopLoop();
+    const handleEnded = () => stopLoop();
+    // On seek, immediately refresh once even if paused
+    const handleSeeked = () => tick();
 
     video.addEventListener('play', handlePlay);
-    video.addEventListener('timeupdate', handleTimeUpdate);
-    video.addEventListener('seeking', handleTimeUpdate);
-    video.addEventListener('seeked', handleTimeUpdate);
+    video.addEventListener('pause', handlePause);
+    video.addEventListener('ended', handleEnded);
+    video.addEventListener('seeked', handleSeeked);
+
+    // Bootstrap if video is already playing when this effect runs
+    if (!video.paused && !video.ended) {
+      startLoop();
+    } else {
+      // Still run once to set initial state for current position
+      tick();
+    }
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
+      stopLoop();
       video.removeEventListener('play', handlePlay);
-      video.removeEventListener('timeupdate', handleTimeUpdate);
-      video.removeEventListener('seeking', handleTimeUpdate);
-      video.removeEventListener('seeked', handleTimeUpdate);
+      video.removeEventListener('pause', handlePause);
+      video.removeEventListener('ended', handleEnded);
+      video.removeEventListener('seeked', handleSeeked);
     };
   }, [videoRef, segments, style]);
 
