@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { type CaptionSegment, computeWordTimings } from '../services/subtitleUtils';
+import { type CaptionSegment } from '../services/subtitleUtils';
 import { type CaptionStyle, isPowerWord } from '../services/captionStyles';
 
 interface LiveCaptionOverlayProps {
@@ -8,6 +8,18 @@ interface LiveCaptionOverlayProps {
   style: CaptionStyle;
 }
 
+interface WordTiming {
+  word: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * Lightweight caption overlay.
+ * Uses the HTML `timeupdate` event (fires ~4x/sec) instead of requestAnimationFrame (60fps).
+ * No canvas, no frame extraction, no pixel processing.
+ * Just finds the active caption segment from transcript timestamps and renders HTML text.
+ */
 export const LiveCaptionOverlay: React.FC<LiveCaptionOverlayProps> = ({
   videoRef,
   segments,
@@ -15,29 +27,39 @@ export const LiveCaptionOverlay: React.FC<LiveCaptionOverlayProps> = ({
 }) => {
   const [activeSeg, setActiveSeg] = useState<CaptionSegment | null>(null);
   const [activeWordIndex, setActiveWordIndex] = useState<number>(0);
-  const rafRef = useRef<number>(0);
-  const isRunningRef = useRef<boolean>(false);
+  // Cache word timings per segment to avoid recomputing on every timeupdate
+  const wordTimingsCache = useRef<Map<number, WordTiming[]>>(new Map());
 
   useEffect(() => {
+    // Reset state when segments change
+    setActiveSeg(null);
+    setActiveWordIndex(0);
+    wordTimingsCache.current.clear();
+
     const video = videoRef.current;
-    if (!video || segments.length === 0) {
-      setActiveSeg(null);
-      return;
-    }
+    if (!video || segments.length === 0) return;
 
-    const tick = () => {
+    // Pre-compute word timings for all segments once
+    segments.forEach((seg) => {
+      if (!wordTimingsCache.current.has(seg.id)) {
+        const words = seg.text.trim().split(/\s+/);
+        const duration = seg.end - seg.start;
+        const timings: WordTiming[] = words.map((word, idx) => {
+          const wordStart = seg.start + (duration * idx) / words.length;
+          const wordEnd = seg.start + (duration * (idx + 1)) / words.length;
+          return { word, start: wordStart, end: wordEnd };
+        });
+        wordTimingsCache.current.set(seg.id, timings);
+      }
+    });
+
+    const handleTimeUpdate = () => {
       const time = video.currentTime;
-
-      // Find segment whose window contains current time
       const foundSeg = segments.find((seg) => time >= seg.start && time < seg.end + 0.15);
 
       if (foundSeg) {
         setActiveSeg(foundSeg);
-
-        const wordTimings = computeWordTimings(foundSeg);
-
-        // "Last started word" approach: find the rightmost word that has already begun.
-        // This is more reliable than exact range matching and has zero artificial offset.
+        const wordTimings = wordTimingsCache.current.get(foundSeg.id) || [];
         let bestIdx = 0;
         for (let i = 0; i < wordTimings.length; i++) {
           if (time >= wordTimings[i].start) {
@@ -46,56 +68,26 @@ export const LiveCaptionOverlay: React.FC<LiveCaptionOverlayProps> = ({
             break;
           }
         }
-
         setActiveWordIndex(bestIdx);
       } else {
         setActiveSeg(null);
       }
-
-      if (isRunningRef.current) {
-        rafRef.current = requestAnimationFrame(tick);
-      }
     };
 
-    const startLoop = () => {
-      if (!isRunningRef.current) {
-        isRunningRef.current = true;
-        rafRef.current = requestAnimationFrame(tick);
-      }
-    };
+    // Also update on seek (which doesn't always fire timeupdate)
+    const handleSeeked = () => handleTimeUpdate();
 
-    const stopLoop = () => {
-      isRunningRef.current = false;
-      cancelAnimationFrame(rafRef.current);
-    };
-
-    const handlePlay = () => startLoop();
-    const handlePause = () => stopLoop();
-    const handleEnded = () => stopLoop();
-    // On seek, immediately refresh once even if paused
-    const handleSeeked = () => tick();
-
-    video.addEventListener('play', handlePlay);
-    video.addEventListener('pause', handlePause);
-    video.addEventListener('ended', handleEnded);
+    video.addEventListener('timeupdate', handleTimeUpdate);
     video.addEventListener('seeked', handleSeeked);
 
-    // Bootstrap if video is already playing when this effect runs
-    if (!video.paused && !video.ended) {
-      startLoop();
-    } else {
-      // Still run once to set initial state for current position
-      tick();
-    }
+    // Run once immediately
+    handleTimeUpdate();
 
     return () => {
-      stopLoop();
-      video.removeEventListener('play', handlePlay);
-      video.removeEventListener('pause', handlePause);
-      video.removeEventListener('ended', handleEnded);
+      video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('seeked', handleSeeked);
     };
-  }, [videoRef, segments, style]);
+  }, [videoRef, segments]);
 
   if (!activeSeg) return null;
 
@@ -119,7 +111,7 @@ export const LiveCaptionOverlay: React.FC<LiveCaptionOverlayProps> = ({
   const scale = 0.45;
   const computedFontSize = Math.max(16, Math.min(32, style.fontSize * scale));
 
-  // Word-Pop Mode: show only active word or 2-word punch in massive centered format
+  // Word-Pop Mode: show only active word
   if (style.animationType === 'word_pop') {
     const currentWord = rawWords[activeWordIndex] || rawWords[0];
     const isPower = style.autoHighlightPowerWords && isPowerWord(currentWord);
@@ -142,7 +134,7 @@ export const LiveCaptionOverlay: React.FC<LiveCaptionOverlayProps> = ({
             borderRadius: style.backgroundColor !== 'transparent' ? '8px' : undefined,
             letterSpacing: style.fontFamily === 'Impact' ? '1px' : 'normal',
           }}
-          className="font-black leading-tight inline-block select-none transform animate-in zoom-in-90 duration-75"
+          className="font-black leading-tight inline-block select-none"
         >
           {currentWord}
         </span>
@@ -150,10 +142,10 @@ export const LiveCaptionOverlay: React.FC<LiveCaptionOverlayProps> = ({
     );
   }
 
-  // Karaoke Glow & Power Word Modes: render full phrase with live active word highlighting
+  // Karaoke / Power Word Modes
   return (
     <div
-      className={`absolute left-0 right-0 px-4 pointer-events-none z-20 flex justify-center text-center transition-all duration-100 ${getPositionClass()}`}
+      className={`absolute left-0 right-0 px-4 pointer-events-none z-20 flex justify-center text-center ${getPositionClass()}`}
     >
       <div
         style={{
@@ -180,7 +172,7 @@ export const LiveCaptionOverlay: React.FC<LiveCaptionOverlayProps> = ({
             textShadow = `0 0 16px ${wordColor}, 0 2px 10px rgba(0,0,0,0.95)`;
             transform = 'scale(1.12)';
           } else if (isKaraoke && isPower) {
-            wordColor = '#FF8A00'; // Subtle fiery accent for power words when not active
+            wordColor = '#FF8A00';
           }
 
           return (
@@ -194,7 +186,7 @@ export const LiveCaptionOverlay: React.FC<LiveCaptionOverlayProps> = ({
                     ? `${Math.max(1, style.strokeWidth * 0.6)}px ${style.strokeColor}`
                     : undefined,
                 textShadow,
-                transition: 'color 0.1s ease, transform 0.1s ease, text-shadow 0.1s ease',
+                transition: 'color 0.15s ease, transform 0.15s ease',
               }}
               className="inline-block"
             >

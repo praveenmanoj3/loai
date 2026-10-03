@@ -71,14 +71,16 @@ export function computeHardwareRecommendation(
   };
 }
 
-export async function detectHardwareCapabilities(): Promise<HardwareStatus> {
+export async function detectHardwareCapabilities(checkWebGpu: boolean = false): Promise<HardwareStatus> {
   const webAssemblySupported = typeof WebAssembly === 'object' && typeof WebAssembly.instantiate === 'function';
   const sharedArrayBufferSupported = typeof SharedArrayBuffer !== 'undefined';
   
   let webGpuSupported = false;
   let gpuName: string | undefined = undefined;
 
-  if ('gpu' in navigator && (navigator as any).gpu) {
+  // WebGPU adapter request is expensive (triggers driver enumeration).
+  // Only run it when explicitly requested (e.g. user opens settings modal).
+  if (checkWebGpu && 'gpu' in navigator && (navigator as any).gpu) {
     try {
       const adapter = await (navigator as any).gpu.requestAdapter();
       if (adapter) {
@@ -90,6 +92,9 @@ export async function detectHardwareCapabilities(): Promise<HardwareStatus> {
     } catch {
       webGpuSupported = false;
     }
+  } else if (!checkWebGpu) {
+    // Quick sync check: just see if the API exists, without requesting an adapter
+    webGpuSupported = typeof navigator !== 'undefined' && 'gpu' in navigator && !!(navigator as any).gpu;
   }
 
   const cores = navigator.hardwareConcurrency || 4;

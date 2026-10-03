@@ -1,13 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Header } from './components/Header';
 import { Dropzone } from './components/Dropzone';
 import { StudioControls } from './components/StudioControls';
 import { CaptionCustomizer } from './components/CaptionCustomizer';
 import { LiveCaptionOverlay } from './components/LiveCaptionOverlay';
-import { SmartClipSelector } from './components/SmartClipSelector';
-import { BenchmarkModal } from './components/BenchmarkModal';
-import { PrivacyModal } from './components/PrivacyModal';
-import { BatchExportModal } from './components/BatchExportModal';
+import { SmartClipFinder } from './components/SmartClipFinder';
 import { ProcessingProgress } from './components/ProcessingProgress';
 import { ResultView } from './components/ResultView';
 import { TranscriptViewer } from './components/TranscriptViewer';
@@ -22,10 +19,8 @@ import {
   type ZoomIntensityType,
 } from './services/ffmpegService';
 import { extractVideoMetadata, type VideoMetadata } from './services/videoMetadata';
-import { whisperService } from './services/whisperService';
 import { DEFAULT_CAPTION_STYLE, type CaptionStyle } from './services/captionStyles';
-import { selectCandidateClips, type CandidateClip } from './services/clipSelector';
-import { batchExportService, type BatchOverallProgress } from './services/batchExportService';
+import { findSmartClips, type ClipSuggestion } from './services/smartClipFinder';
 import type { CaptionSegment } from './services/subtitleUtils';
 import { 
   ShieldCheck, 
@@ -42,6 +37,23 @@ import {
   Clock,
   Gauge
 } from 'lucide-react';
+
+// Heavy modals loaded lazily — not bundled into the initial JS chunk
+const BenchmarkModal = lazy(() =>
+  import('./components/BenchmarkModal').then((m) => ({ default: m.BenchmarkModal }))
+);
+const PrivacyModal = lazy(() =>
+  import('./components/PrivacyModal').then((m) => ({ default: m.PrivacyModal }))
+);
+// whisperService loaded lazily — only imported when transcription is triggered
+let whisperService: typeof import('./services/whisperService')['whisperService'] | null = null;
+const getWhisperService = async () => {
+  if (!whisperService) {
+    const mod = await import('./services/whisperService');
+    whisperService = mod.whisperService;
+  }
+  return whisperService;
+};
 
 export function App() {
   const [hardware, setHardware] = useState<HardwareStatus | null>(null);
@@ -73,17 +85,22 @@ export function App() {
   // Caption Styling State (Fully customizable)
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(DEFAULT_CAPTION_STYLE);
 
-  // Transcript & AI Candidate Clips State
+  // Transcript & Smart Clip Finder State
   const [transcriptSegments, setTranscriptSegments] = useState<CaptionSegment[]>([]);
-  const [candidateClips, setCandidateClips] = useState<CandidateClip[]>([]);
+  const [candidateClips, setCandidateClips] = useState<ClipSuggestion[]>([]);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [previewingClipId, setPreviewingClipId] = useState<string | null>(null);
   const [transcriptionTimeMs, setTranscriptionTimeMs] = useState<number | undefined>(undefined);
+  // Ref to hold end-time for auto-stop during clip preview (avoids React state re-renders)
+  const previewClipEndRef = useRef<number | null>(null);
 
-  // Day 9: Batch Export Queue State
-  const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
-  const [isBatchModalOpen, setIsBatchModalOpen] = useState<boolean>(false);
-  const [batchProgress, setBatchProgress] = useState<BatchOverallProgress | null>(null);
-  const batchAbortRef = useRef<AbortController | null>(null);
+  // Result: store URL and timing only — NOT the Blob (keep large data out of React state)
+  const [result, setResult] = useState<{
+    url: string;
+    executionTimeMs: number;
+  } | null>(null);
+  // Keep Blob reference outside React state for download
+  const resultBlobRef = useRef<Blob | null>(null);
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [progressState, setProgressState] = useState<ProgressState>({
@@ -92,14 +109,9 @@ export function App() {
     statusMessage: '',
     logs: [],
   });
-  const [result, setResult] = useState<{
-    blob: Blob;
-    url: string;
-    executionTimeMs: number;
-  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Detect hardware capabilities on mount
+  // Detect hardware capabilities on mount — lightweight check, no WebGPU adapter query
   useEffect(() => {
     detectHardwareCapabilities().then((hw) => {
       setHardware(hw);
@@ -109,6 +121,22 @@ export function App() {
         setQuality(hw.recommendation.suggestedQuality);
       }
     });
+  }, []);
+
+  // Auto-stop preview: listens on the video element for clip.end.
+  // Registered once; reads previewClipEndRef so it never needs to be re-added.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const handleTimeUpdate = () => {
+      if (previewClipEndRef.current !== null && video.currentTime >= previewClipEndRef.current) {
+        video.pause();
+        previewClipEndRef.current = null;
+        setPreviewingClipId(null);
+      }
+    };
+    video.addEventListener('timeupdate', handleTimeUpdate);
+    return () => video.removeEventListener('timeupdate', handleTimeUpdate);
   }, []);
 
   // Toggle Eco Mode Helper
@@ -124,13 +152,11 @@ export function App() {
     }
   };
 
-  // Recalculate AI Candidate Clips whenever transcript or duration updates
+  // Re-run Smart Clip Finder whenever transcript or duration updates
   useEffect(() => {
     if (transcriptSegments.length > 0 && metadata?.duration) {
-      const clips = selectCandidateClips(transcriptSegments, metadata.duration);
+      const clips = findSmartClips(transcriptSegments, metadata.duration);
       setCandidateClips(clips);
-      // Pre-select all candidate clips for batch export by default
-      setSelectedBatchIds(clips.map((c) => c.id));
     }
   }, [transcriptSegments, metadata?.duration]);
 
@@ -144,9 +170,8 @@ export function App() {
     setTranscriptSegments([]);
     setCandidateClips([]);
     setSelectedClipId(null);
-    setSelectedBatchIds([]);
-    setBatchProgress(null);
-    setIsBatchModalOpen(false);
+    setPreviewingClipId(null);
+    previewClipEndRef.current = null;
     setTranscriptionTimeMs(undefined);
     setActiveTab('settings');
 
@@ -164,15 +189,16 @@ export function App() {
   const handleReset = () => {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     if (result?.url) URL.revokeObjectURL(result.url);
+    resultBlobRef.current = null;
+    previewClipEndRef.current = null;
+    videoRef.current?.pause();
     setSelectedFile(null);
     setPreviewUrl(null);
     setMetadata(null);
     setTranscriptSegments([]);
     setCandidateClips([]);
     setSelectedClipId(null);
-    setSelectedBatchIds([]);
-    setBatchProgress(null);
-    setIsBatchModalOpen(false);
+    setPreviewingClipId(null);
     setTranscriptionTimeMs(undefined);
     setResult(null);
     setError(null);
@@ -193,85 +219,50 @@ export function App() {
     }
   };
 
-  // Preview Candidate Clip in video player
-  const handlePreviewClip = (clip: CandidateClip) => {
-    setSelectedClipId(clip.id);
-    if (videoRef.current) {
-      videoRef.current.currentTime = clip.start;
-      videoRef.current.play();
+  // Preview clip: seek video to start, auto-stop at end via previewClipEndRef
+  const handlePreviewClip = (clip: ClipSuggestion) => {
+    if (!videoRef.current) return;
+    // If already previewing this clip, stop it
+    if (previewingClipId === clip.id && !videoRef.current.paused) {
+      videoRef.current.pause();
+      previewClipEndRef.current = null;
+      setPreviewingClipId(null);
+      return;
     }
+    previewClipEndRef.current = clip.end;
+    setPreviewingClipId(clip.id);
+    videoRef.current.currentTime = clip.start;
+    videoRef.current.play().catch(() => {
+      previewClipEndRef.current = null;
+      setPreviewingClipId(null);
+    });
   };
 
-  // Select Candidate Clip and set trim range
-  const handleSelectClip = (clip: CandidateClip) => {
+  // Use Clip: load into editor, switch to Format Studio tab for customization before export
+  const handleUseClip = (clip: ClipSuggestion) => {
     setSelectedClipId(clip.id);
     setTrimRange({ start: clip.start, end: clip.end });
+    // Stop any ongoing preview
+    previewClipEndRef.current = null;
+    setPreviewingClipId(null);
+    videoRef.current?.pause();
+    // Switch to Format Studio so user can customize before exporting
+    setActiveTab('settings');
   };
 
-  // 1-Click Generate specific Candidate Clip
-  const handleGenerateClipDirect = async (clip: CandidateClip) => {
-    setSelectedClipId(clip.id);
-    setTrimRange({ start: clip.start, end: clip.end });
-    await executeGeneration({ start: clip.start, end: clip.end }, clip.segments);
-  };
+  // Manual clip: switch to Format Studio trim controls
+  const handleManualClip = () => setActiveTab('settings');
 
-  // Batch Export Handlers
-  const handleToggleBatchSelect = (clipId: string) => {
-    setSelectedBatchIds((prev) =>
-      prev.includes(clipId) ? prev.filter((id) => id !== clipId) : [...prev, clipId]
-    );
-  };
+  // Batch export disabled — kept as stubs so downstream components compile
+  const handleToggleBatchSelect = (_clipId: string) => {};
+  const handleSelectAllBatch = () => {};
+  const handleDeselectAllBatch = () => {};
+  const selectedBatchIds: string[] = [];
+  const handleStartBatchExport = async (_selectedClips: ClipSuggestion[]) => {};
 
-  const handleSelectAllBatch = () => {
-    setSelectedBatchIds(candidateClips.map((c) => c.id));
-  };
 
-  const handleDeselectAllBatch = () => {
-    setSelectedBatchIds([]);
-  };
 
-  const handleStartBatchExport = async (selectedClips: CandidateClip[]) => {
-    if (!selectedFile || selectedClips.length === 0) return;
-
-    const controller = new AbortController();
-    batchAbortRef.current = controller;
-    setIsBatchModalOpen(true);
-
-    try {
-      await batchExportService.runBatchExport(selectedFile, selectedClips, {
-        aspectRatio,
-        quality,
-        cropAlignment,
-        dynamicZoom,
-        zoomIntensity,
-        enableCaptions,
-        captionStyle,
-        threadCount,
-        videoFileName: selectedFile.name,
-        abortSignal: controller.signal,
-        onProgress: (p) => {
-          setBatchProgress(p);
-        },
-      });
-    } catch (err: any) {
-      console.error('Batch export error:', err);
-    }
-  };
-
-  const handleCancelBatch = () => {
-    if (batchAbortRef.current) {
-      batchAbortRef.current.abort();
-      batchAbortRef.current = null;
-    }
-  };
-
-  const handleDownloadBatchZip = () => {
-    if (batchProgress?.zipBlob && selectedFile) {
-      batchExportService.downloadZip(batchProgress.zipBlob, selectedFile.name);
-    }
-  };
-
-  // Standalone transcription trigger
+  // Standalone transcription trigger — loads Whisper lazily
   const handleTranscribeOnly = async () => {
     if (!selectedFile) return;
 
@@ -284,11 +275,14 @@ export function App() {
       setProgressState({
         phase: 'processing',
         progress: 10,
-        statusMessage: `Extracting audio & initializing Whisper AI (${activeMode === 'wasm-eco' ? 'Eco 8-Bit • ' + threadCount + ' Cores' : activeMode.toUpperCase()})...`,
+        statusMessage: `Extracting audio & loading Whisper AI (${activeMode === 'wasm-eco' ? 'Eco 8-Bit • ' + threadCount + ' Cores' : activeMode.toUpperCase()})...`,
         logs: [`[Whisper] Engine: ${activeMode.toUpperCase()} starting on-device with ${threadCount} CPU threads...`],
       });
 
-      const transResult = await whisperService.transcribeVideo(
+      // Lazy-load whisperService only when the user actually wants transcription
+      const svc = await getWhisperService();
+
+      const transResult = await svc.transcribeVideo(
         selectedFile,
         (p) => {
           setProgressState((prev) => ({
@@ -305,9 +299,9 @@ export function App() {
       setTranscriptSegments(transResult.segments);
       setTranscriptionTimeMs(transResult.executionTimeMs);
 
-      // Auto calculate candidate clips and open Viral Clips tab
+      // Run Smart Clip Finder on the fresh transcript and open Viral Clips tab
       if (metadata?.duration) {
-        const clips = selectCandidateClips(transResult.segments, metadata.duration);
+        const clips = findSmartClips(transResult.segments, metadata.duration);
         setCandidateClips(clips);
         if (clips.length > 0) {
           setActiveTab('viral_clips');
@@ -349,7 +343,9 @@ export function App() {
         });
 
         try {
-          const transResult = await whisperService.transcribeVideo(
+          // Lazy-load whisperService only when user actually triggers generation with captions
+          const svc = await getWhisperService();
+          const transResult = await svc.transcribeVideo(
             selectedFile,
             (p) => {
               setProgressState((prev) => ({
@@ -383,7 +379,6 @@ export function App() {
             }))
         : currentSegments;
 
-      // Step 2: Convert & Burn Captions using FFmpeg WASM / Compositor with thread limit
       const output = await ffmpegService.convertToVerticalShort(selectedFile, {
         aspectRatio,
         quality,
@@ -400,7 +395,9 @@ export function App() {
         },
       });
 
-      setResult(output);
+      // Store blob outside React state to avoid triggering extra re-renders
+      resultBlobRef.current = output.blob;
+      setResult({ url: output.url, executionTimeMs: output.executionTimeMs });
     } catch (err: any) {
       console.error('Error generating short:', err);
       setError(
@@ -842,18 +839,15 @@ export function App() {
                     )}
 
                     {activeTab === 'viral_clips' && (
-                      <SmartClipSelector
+                      <SmartClipFinder
                         clips={candidateClips}
+                        hasTranscript={transcriptSegments.length > 0}
+                        previewingClipId={previewingClipId}
                         selectedClipId={selectedClipId}
-                        selectedBatchIds={selectedBatchIds}
-                        onToggleBatchSelect={handleToggleBatchSelect}
-                        onSelectAllBatch={handleSelectAllBatch}
-                        onDeselectAllBatch={handleDeselectAllBatch}
-                        onSelectClip={handleSelectClip}
-                        onPreviewClip={handlePreviewClip}
-                        onGenerateClipDirect={handleGenerateClipDirect}
-                        onStartBatchExport={handleStartBatchExport}
                         onTranscribe={handleTranscribeOnly}
+                        onPreviewClip={handlePreviewClip}
+                        onUseClip={handleUseClip}
+                        onManualClip={handleManualClip}
                         isProcessing={isProcessing}
                       />
                     )}
@@ -901,7 +895,7 @@ export function App() {
             originalVideoUrl={previewUrl}
             shortVideoUrl={result.url}
             executionTimeMs={result.executionTimeMs}
-            outputBlob={result.blob}
+            outputBlob={resultBlobRef.current ?? undefined}
             metadata={metadata}
             aspectRatio={aspectRatio}
             quality={quality}
@@ -911,32 +905,26 @@ export function App() {
         )}
       </main>
 
-      {/* Day 9: Batch Export Modal */}
-      <BatchExportModal
-        isOpen={isBatchModalOpen}
-        progress={batchProgress}
-        onClose={() => setIsBatchModalOpen(false)}
-        onCancel={handleCancelBatch}
-        onDownloadZip={handleDownloadBatchZip}
-        videoFileName={selectedFile?.name || 'ShortsAI_Batch'}
-      />
-
-      {/* Benchmark & Laptop Safety Advisor Modal */}
-      <BenchmarkModal
-        isOpen={isBenchmarkOpen}
-        onClose={() => setIsBenchmarkOpen(false)}
-        engineMode={engineMode}
-        setEngineMode={setEngineMode}
-        hardware={hardware}
-        threadCount={threadCount}
-        setThreadCount={setThreadCount}
-      />
-
-      {/* Day 7 Privacy Architecture Verification Modal */}
-      <PrivacyModal
-        isOpen={isPrivacyOpen}
-        onClose={() => setIsPrivacyOpen(false)}
-      />
+      {/* Modals — rendered lazily via Suspense; only mounted when open */}
+      <Suspense fallback={null}>
+        {isBenchmarkOpen && (
+          <BenchmarkModal
+            isOpen={isBenchmarkOpen}
+            onClose={() => setIsBenchmarkOpen(false)}
+            engineMode={engineMode}
+            setEngineMode={setEngineMode}
+            hardware={hardware}
+            threadCount={threadCount}
+            setThreadCount={setThreadCount}
+          />
+        )}
+        {isPrivacyOpen && (
+          <PrivacyModal
+            isOpen={isPrivacyOpen}
+            onClose={() => setIsPrivacyOpen(false)}
+          />
+        )}
+      </Suspense>
 
       {/* Footer */}
       <footer className="w-full border-t border-white/5 py-6 bg-[#07080c] text-center text-xs text-slate-500">

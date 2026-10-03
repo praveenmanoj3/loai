@@ -3,14 +3,9 @@ import { fetchFile } from '@ffmpeg/util';
 import { ffmpegService } from './ffmpegService';
 import { type CaptionSegment, computeWordTimings, generateSrt, generateVtt } from './subtitleUtils';
 
-// Configure transformers.js for reliable client-side execution & caching
-env.allowLocalModels = false;
-env.useBrowserCache = true;
-
-// Configure ONNX WASM paths for CPU fallback
-if (env.backends?.onnx?.wasm) {
-  env.backends.onnx.wasm.numThreads = typeof navigator !== 'undefined' ? Math.min(4, navigator.hardwareConcurrency || 2) : 1;
-}
+// NOTE: env configuration is applied lazily inside loadModel() — not at module import time.
+// This ensures the Hugging Face/ONNX runtime is only configured when the user actually
+// triggers transcription, not on initial page load.
 
 export interface TranscriptionProgress {
   status: string;
@@ -56,17 +51,22 @@ class WhisperService {
     }
 
     this.isModelLoading = true;
+
+    // Apply env config here (lazy — only runs when transcription is actually requested)
+    env.allowLocalModels = false;
+    env.useBrowserCache = true;
+
+    // Set ONNX WASM thread limit to keep laptop cool
+    if (env.backends?.onnx?.wasm) {
+      env.backends.onnx.wasm.numThreads = Math.max(1, Math.min(threadCount, 4));
+    }
+
     if (onProgress) {
       onProgress({
         status: `Checking hardware & initializing ${engineMode === 'wasm-eco' ? 'Eco-Light (8-bit)' : 'Whisper'} AI...`,
         progress: 10,
         phase: 'loading_model',
       });
-    }
-
-    // Set ONNX WASM thread limit to keep laptop cool
-    if (env.backends?.onnx?.wasm) {
-      env.backends.onnx.wasm.numThreads = Math.max(1, Math.min(threadCount, 4));
     }
 
     const isWebGpuReady = (engineMode === 'auto' || engineMode === 'webgpu') 
